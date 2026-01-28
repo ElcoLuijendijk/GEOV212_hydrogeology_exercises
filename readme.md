@@ -6,6 +6,7 @@ Please follow one of the following links to open the exercises in [Google Colab]
 
 
 * [An introduction to Python and arrays](http://colab.research.google.com/github/ElcoLuijendijk/GEOV212_hydrogeology_exercises/blob/main/introduction_to_python_arrays.ipynb)
+* [Exercise 1: Create your own groundwater model](http://colab.research.google.com/github/ElcoLuijendijk/GEOV212_hydrogeology_exercises/blob/main/exercise1_steady_state_groundwater_model.ipynb)
 
 
 
