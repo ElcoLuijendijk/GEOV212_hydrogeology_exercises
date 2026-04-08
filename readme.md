@@ -12,7 +12,9 @@ Please follow one of the following links to open the exercises in [Google Colab]
   * [Exercise 3a: Pore pressure and seismicity](http://colab.research.google.com/github/ElcoLuijendijk/GEOV212_hydrogeology_exercises/blob/main/exercise_3a_pore_pressure_and_seismicity.ipynb)
   * [Exercise 3b: Resilience of a qanat to drought](http://colab.research.google.com/github/ElcoLuijendijk/GEOV212_hydrogeology_exercises/blob/main/exercise_3b_qanat_resilience.ipynb)
 * [Exercise 4: Compaction](http://colab.research.google.com/github/ElcoLuijendijk/GEOV212_hydrogeology_exercises/blob/main/exercise_4_compaction.ipynb)
-
+* Exercise 5: Map-view groundwater model of a catchment of choice in Norway
+  * Overview and workflow
+  * [5a: Collect model data from open data source:](http://colab.research.google.com/github/ElcoLuijendijk/GEOV212_hydrogeology_exercises/blob/main/exercise_5a_model_data.ipynb)
 
 
 
