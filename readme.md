@@ -14,14 +14,16 @@ Please follow one of the following links to open the exercises in [Google Colab]
 * [Exercise 4: Compaction](http://colab.research.google.com/github/ElcoLuijendijk/GEOV212_hydrogeology_exercises/blob/main/exercise_4_compaction.ipynb)
 * Exercise 5: Map-view groundwater model of a catchment of choice in Norway
   * Overview and workflow
-  * [5a: Collect model data from open data source:](http://colab.research.google.com/github/ElcoLuijendijk/GEOV212_hydrogeology_exercises/blob/main/exercise_5a_model_data.ipynb)
+  * [5a: Collect model data from open data sources](http://colab.research.google.com/github/ElcoLuijendijk/GEOV212_hydrogeology_exercises/blob/main/exercise_5a_model_data.ipynb)
+  * [5b: Run and calibrate a steady-state groundwater model](http://colab.research.google.com/github/ElcoLuijendijk/GEOV212_hydrogeology_exercises/blob/main/exercise_5b_gw_model.ipynb)
 
 
 
 # Pre-requisites
 
 * An internet connected desktop or laptop
-* A google account to run these notebooks in google colab. Alternatively you can run the exercises on your own machine too by first downloading this repository using the `<> Code` and the `Clone` or `Download ZIP options` on the top right of this site, installing a Python and Jupyter notebook environment, such as [Anaconda](https://www.anaconda.com/), an editor like [Visual Studio Code](https://code.visualstudio.com/) and then using this to open and run the exercise notebooks in this repository.
+* A google account to run these notebooks in google colab. 
+* Alternatively you can run the exercises on your own machine too by first downloading this repository using the `<> Code` and the `Clone` or `Download ZIP options` on the top right of this site, installing a Python and Jupyter notebook environment, such as [Anaconda](https://www.anaconda.com/), an editor like [Visual Studio Code](https://code.visualstudio.com/) and then using this to open and run the exercise notebooks in this repository.
 
 
 
