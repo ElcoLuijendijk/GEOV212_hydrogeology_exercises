@@ -485,7 +485,8 @@ def plot_cross_sections(transects, head, dem, sw, drn_flux, active,
     ov.imshow(sw_ov, cmap='Blues', vmin=0, vmax=4, alpha=0.40, zorder=5,
               interpolation='nearest')
 
-    # Draw each cross-section as a thick coloured line
+    # Draw each cross-section as a thick coloured line with A/B, C/D … endpoint labels
+    _endpoint_labels = [('A', 'B'), ('C', 'D'), ('E', 'F'), ('G', 'H'), ('I', 'J')]
     for i_t, tr in enumerate(transects):
         clr = _sec_colours[i_t % len(_sec_colours)]
         ov.plot(tr['cols'], tr['rows'], color=clr, linewidth=2.5, zorder=8,
@@ -494,6 +495,14 @@ def plot_cross_sections(transects, head, dem, sw, drn_flux, active,
         ov.text(tr['cols'][mid] + 1.5, tr['rows'][mid] - 1.5,
                 tr['label'], color=clr, fontsize=8, fontweight='bold', zorder=9,
                 bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.7))
+        # Endpoint markers (A/B for section 1, C/D for section 2, …)
+        lbl_start, lbl_end = _endpoint_labels[i_t % len(_endpoint_labels)]
+        _ep_kw = dict(fontsize=9, fontweight='bold', color=clr, zorder=11,
+                      ha='center', va='center',
+                      bbox=dict(boxstyle='circle,pad=0.25', fc='white',
+                                ec=clr, linewidth=1.2))
+        ov.text(tr['cols'][0],  tr['rows'][0],  lbl_start, **_ep_kw)
+        ov.text(tr['cols'][-1], tr['rows'][-1], lbl_end,   **_ep_kw)
 
     ov.set_xlim(-0.5, ncol - 0.5)
     ov.set_ylim(nrow - 0.5, -0.5)
@@ -569,6 +578,15 @@ def plot_cross_sections(transects, head, dem, sw, drn_flux, active,
         ax.set_xlabel('Distance along section (km)')
         ax.set_ylabel('Elevation (m a.s.l.)')
         ax.set_title(f'{tr["label"]} — {label}', fontsize=9, color=clr)
+
+        # Endpoint labels (A/B, C/D, …) at the left and right margins
+        lbl_start, lbl_end = _endpoint_labels[i_sec % len(_endpoint_labels)]
+        _ep_ax_kw = dict(fontsize=10, fontweight='bold', color=clr, zorder=11,
+                         va='bottom', transform=ax.get_xaxis_transform(),
+                         bbox=dict(boxstyle='circle,pad=0.30', fc='white',
+                                   ec=clr, linewidth=1.2))
+        ax.text(dist_km[0],  -0.06, lbl_start, ha='right', **_ep_ax_kw)
+        ax.text(dist_km[-1], -0.06, lbl_end,   ha='left',  **_ep_ax_kw)
         ax.legend(loc='best', fontsize=6, ncol=2, framealpha=0.85)
 
     fig.suptitle(f'Hydrogeological cross-sections — {label}', fontsize=11, y=0.99)
