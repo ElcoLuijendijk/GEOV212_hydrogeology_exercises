@@ -328,6 +328,14 @@ def run_flopy_steady(
     """
     Run a steady-state groundwater model using FLOPY / MODFLOW 6.
 
+    The aquifer is treated as **confined** (``icelltype=0``, constant
+    transmissivity T = K × aquifer_thickness_m).  This is deliberate: it
+    makes the MF6 solution physically equivalent to the iterative fallback
+    solver, which also uses a fixed T = K × b.  The simplification is
+    justified because aquifer thickness is poorly constrained for Norwegian
+    catchments, and K spans several orders of magnitude — K is therefore the
+    dominant uncertainty, not the saturated thickness.
+
     Parameters
     ----------
     hk_arr : ndarray
@@ -343,7 +351,7 @@ def run_flopy_steady(
     nrow, ncol, delr, delc : int/float
         Grid dimensions and cell sizes (m).
     aquifer_thickness_m : float
-        Assumed uniform aquifer thickness (m).
+        Assumed uniform aquifer thickness (m).  Sets T = K × b (confined).
     model_dir : Path
         Directory for MODFLOW workspace sub-folders.
     wells : list of dict, optional
@@ -389,7 +397,9 @@ def run_flopy_steady(
     )
 
     flopy.mf6.ModflowGwfic(gwf, strt=np.where(active_arr, top_arr - 1.0, np.nan))
-    flopy.mf6.ModflowGwfnpf(gwf, icelltype=1, k=hk_arr, save_specific_discharge=True)
+    # icelltype=0 → confined: T = K × aquifer_thickness_m (constant, head-independent).
+    # This matches the iterative fallback, which also uses fixed T = K × b.
+    flopy.mf6.ModflowGwfnpf(gwf, icelltype=0, k=hk_arr, save_specific_discharge=True)
     flopy.mf6.ModflowGwfrcha(gwf, recharge=np.where(active_arr, rch_arr, 0.0))
 
     drn_rc = np.argwhere(drn_mask)
@@ -447,6 +457,13 @@ def run_iterative_fallback(
     Solve the steady-state groundwater flow equation using a simple iterative
     (Gauss-Seidel-like) scheme.  Used as a fallback when FLOPY/MODFLOW 6 is
     unavailable.
+
+    Transmissivity is held **constant** at T = K × aquifer_thickness_m
+    (confined assumption), identical to the MF6 path which uses
+    ``icelltype=0``.  This ensures calibrated K values are comparable
+    regardless of which solver is used.  The simplification is justified
+    because aquifer thickness is poorly constrained and K is the dominant
+    uncertainty.
 
     Parameters follow the same convention as run_flopy_steady.  Wells are
     represented as point sinks added to the recharge field
@@ -514,6 +531,16 @@ def run_iterative_fallback(
         maxdiff = np.nanmax(np.abs(h - h_old))
         if maxdiff < tol:
             break
+    else:
+        # Loop completed without meeting the tolerance — warn the user.
+        warnings.warn(
+            f"Iterative fallback solver did not converge after {max_iter} iterations "
+            f"(max head change = {maxdiff:.4g} m, tolerance = {tol} m). "
+            "Results may be inaccurate. Consider increasing max_iter or checking "
+            "that drain conductances are not orders of magnitude larger than "
+            "aquifer transmissivity.",
+            UserWarning, stacklevel=2,
+        )
 
     drn_flux = np.where(drn_mask & (h > drn_elev), drn_cond * (h - drn_elev), 0.0)
     return h, drn_flux, "iterative-fallback"
