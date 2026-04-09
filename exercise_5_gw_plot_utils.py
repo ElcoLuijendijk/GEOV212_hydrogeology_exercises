@@ -27,6 +27,7 @@ add_map_overlays            – Domain boundary + sea overlay on map axes.
 plot_model_output           – 5-panel spatial map for one calibration.
 plot_calibration_comparison – 4-panel calibration quality figure.
 plot_cross_sections         – 2-D hydrogeological cross-sections.
+plot_water_budget           – Water-budget bar chart + printed table.
 """
 
 import numpy as np
@@ -125,7 +126,7 @@ def add_map_overlays(ax, grid):
 
 def plot_model_output(head, diagnostics, hk_arr, label, grid, show_obs=None):
     """
-    6-panel single-column spatial overview for one calibration scenario.
+    6-panel single-column spatial overview + water-budget figure for one scenario.
 
     Panels
     ------
@@ -136,6 +137,9 @@ def plot_model_output(head, diagnostics, hk_arr, label, grid, show_obs=None):
     E  Flux to surface water (mm/yr, at river/lake cells only)
     F  log₁₀ Transmissivity (m²/s)
 
+    After the 6 map panels a separate water-budget figure is shown if ``grid``
+    contains 'rch', 'sw_raw', 'sea_raw', and 'aquifer_thickness_m'.
+
     Parameters
     ----------
     head : ndarray        – Modelled hydraulic head (m a.s.l.).
@@ -143,6 +147,10 @@ def plot_model_output(head, diagnostics, hk_arr, label, grid, show_obs=None):
     hk_arr : ndarray      – Hydraulic conductivity field (m/s).
     label : str           – Scenario name (used in titles).
     grid : dict           – Spatial grid information (see module docstring).
+                            Optional extra keys for water budget:
+                            'rch'      – recharge array (m/s)
+                            'sw_raw'   – raw SW raster (0/1/2/3)
+                            'sea_raw'  – raw sea mask (0/1)
     show_obs : DataFrame or None
         Observation DataFrame with columns 'r', 'c', 'well_no'.
         If provided, numbered markers are drawn on panel A.
@@ -264,6 +272,31 @@ def plot_model_output(head, diagnostics, hk_arr, label, grid, show_obs=None):
 
     fig.suptitle(f'Model output maps – {label}', fontsize=11, y=0.98)
     plt.show()
+
+    # ── Water budget (separate figure) ─────────────────────────────────────────
+    # Requires 'rch', 'sw_raw', 'sea_raw', and 'aquifer_thickness_m' in grid.
+    _rch     = grid.get('rch')
+    _sw_raw  = grid.get('sw_raw')
+    _sea_raw = grid.get('sea_raw')
+    _b       = grid.get('aquifer_thickness_m')
+    if _rch is not None and _sw_raw is not None and _sea_raw is not None:
+        wb = gwu.water_budget(
+            diagnostics['drn_flux'], _rch, active, _sw_raw, _sea_raw,
+            delr, delc,
+            head_arr=head, hk_arr=hk_arr, aquifer_thickness_m=_b,
+        )
+        plot_water_budget(wb, label)
+    else:
+        _missing = [k for k, v in
+                    {'rch': _rch, 'sw_raw': _sw_raw, 'sea_raw': _sea_raw}.items()
+                    if v is None]
+        import warnings as _w
+        _w.warn(
+            f"Water budget skipped: key(s) {_missing} not found in grid dict. "
+            "Add rch=rch, sw_raw=sw, sea_raw=sea when building the grid dict "
+            "to enable the automatic water-budget figure.",
+            UserWarning, stacklevel=2,
+        )
 
 
 def plot_calibration_comparison(head, diagnostics, eval_df, obs_stats, targets,
@@ -596,3 +629,112 @@ def plot_cross_sections(transects, head, dem, sw, drn_flux, active,
 
     fig.suptitle(f'Hydrogeological cross-sections — {label}', fontsize=11, y=0.99)
     plt.show()
+
+
+def plot_water_budget(wb, label):
+    """
+    Print a formatted water-budget table and show a bar chart for one scenario.
+
+    Budget components are split into:
+      - Lake discharge   (SW cells with sw == 1)
+      - River discharge  (SW cells with sw == 2)
+      - Upland seepage   (non-SW land cells)
+      - Sea discharge    (Darcy face-flux estimate, falling back to residual)
+
+    All values are shown in mm/yr normalised by active land area.
+
+    Parameters
+    ----------
+    wb : dict
+        Output of ``gwu.water_budget()``.
+    label : str
+        Scenario name used in the figure title.
+
+    Returns
+    -------
+    fig : matplotlib Figure
+    """
+    # ── Choose sea discharge value to display ──────────────────────────────────
+    sea_darcy  = wb.get('sea_discharge_darcy_mm_yr', np.nan)
+    sea_resid  = wb.get('sea_discharge_residual_mm_yr', np.nan)
+    has_darcy  = (sea_darcy is not None) and np.isfinite(sea_darcy)
+
+    sea_primary        = sea_darcy  if has_darcy else sea_resid
+    sea_primary_label  = 'Sea discharge\n(Darcy face)'   if has_darcy else 'Sea discharge\n(residual)'
+    sea_primary_note   = '(direct Darcy estimate)'       if has_darcy else '(mass-balance residual)'
+
+    rch    = wb.get('recharge_mm_yr',          0.0)
+    lake   = wb.get('lake_discharge_mm_yr',    0.0)
+    river  = wb.get('river_discharge_mm_yr',   0.0)
+    seep   = wb.get('upland_seepage_mm_yr',    0.0)
+    imbal  = wb.get('budget_imbalance_darcy_mm_yr',
+                    wb.get('budget_imbalance_residual_mm_yr', np.nan))
+
+    # ── Printed table ──────────────────────────────────────────────────────────
+    w = 62
+    print('=' * w)
+    print(f'  Water budget — {label}')
+    print('-' * w)
+    print(f"  {'Component':<35s}  {'mm/yr':>8s}  {'Sign'}")
+    print('-' * w)
+    _rows = [
+        ('Recharge',                         rch,           '+'),
+        ('Lake discharge',                   -lake,         '-'),
+        ('River discharge',                  -river,        '-'),
+        ('Upland seepage (non-SW land)',      -seep,         '-'),
+        (f'Sea discharge {sea_primary_note}', -sea_primary,  '-'),
+    ]
+    for lbl, val, sgn in _rows:
+        print(f"  {lbl:<35s}  {val:>8.1f}   {sgn}")
+    print('-' * w)
+    if not np.isnan(imbal):
+        print(f"  {'Budget imbalance (should ≈ 0)':<35s}  {imbal:>8.1f}")
+    area_km2 = wb.get('land_area_m2', np.nan) / 1e6
+    if not np.isnan(area_km2):
+        print(f"  Active land area: {area_km2:.1f} km²")
+    if has_darcy and not np.isnan(sea_resid):
+        print(f"  Sea discharge residual check: {sea_resid:.1f} mm/yr "
+              f"(Darcy: {sea_darcy:.1f} mm/yr)")
+    print('=' * w)
+
+    # ── Bar chart ──────────────────────────────────────────────────────────────
+    bar_items = [
+        ('Recharge\n(IN)',           rch,           'forestgreen'),
+        ('Lake\ndischarge',          lake,           'royalblue'),
+        ('River\ndischarge',         river,          'steelblue'),
+        ('Upland\nseepage',          seep,           'darkorange'),
+        (sea_primary_label,          sea_primary,    'mediumpurple'),
+    ]
+    labels_b = [b[0] for b in bar_items]
+    # Recharge shown positive (inflow), discharges shown negative (outflow)
+    vals = [rch, -lake, -river, -seep, -sea_primary]
+    colors = [b[2] for b in bar_items]
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    x = np.arange(len(labels_b))
+    bars = ax.bar(x, vals, color=colors, alpha=0.80, edgecolor='k', linewidth=0.7)
+
+    # If Darcy estimate is available, overlay the residual as a hatched outline bar
+    if has_darcy and not np.isnan(sea_resid):
+        ax.bar(x[-1], -sea_resid,
+               color='none', edgecolor='mediumpurple',
+               linewidth=1.5, hatch='///', alpha=1.0, label='Sea (residual check)')
+        ax.legend(fontsize=8, loc='lower right')
+
+    ax.axhline(0, color='k', linewidth=0.8)
+    ax.set_ylabel('Flux (mm/yr)   [+ = inflow, − = outflow]')
+    ax.set_title(f'Catchment water budget — {label}')
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels_b, fontsize=9)
+    ax.grid(axis='y', alpha=0.4)
+
+    # Label bar values
+    for bar, val in zip(bars, vals):
+        if np.isfinite(val):
+            ypos = val + (2.5 if val >= 0 else -4.0)
+            ax.text(bar.get_x() + bar.get_width() / 2.0, ypos,
+                    f'{abs(val):.0f}', ha='center', va='bottom', fontsize=8)
+
+    fig.tight_layout()
+    plt.show()
+    return fig

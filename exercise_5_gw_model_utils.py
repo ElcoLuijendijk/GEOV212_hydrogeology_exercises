@@ -147,13 +147,13 @@ def drainage_conductance(cell_dx, cell_dy, k_bed=2e-6, b_bed=1.0):
 
 def build_boundary_arrays(dem_arr, sw_arr, sea_arr, active_arr, delr, delc,
                            sea_level_m=0.0, k_bed=2e-6, b_bed=1.0,
-                           hk_arr=None, b_eff=1.0):
+                           hk_arr=None, b_eff=10.0):
     """
     Build drain (DRN) and constant-head (CHD) boundary arrays for the model domain.
 
     Sea cells are assigned a constant head equal to sea_level_m.  All other
     active cells receive a drain boundary that activates when head exceeds the
-    local drain elevation (1 m below the DEM for upland; 0.15 m below DEM for
+    local drain elevation (at the DEM surface for upland; 0.15 m below DEM for
     surface-water cells, which also receive a higher streambed conductance).
 
     Two physically distinct drain conductance formulations are used:
@@ -166,10 +166,17 @@ def build_boundary_arrays(dem_arr, sw_arr, sea_arr, active_arr, delr, delc,
       resistance comes from within the aquifer itself, not a separate clogging
       layer.  Conductance therefore scales with the local aquifer hydraulic
       conductivity:  C = hk[r,c] × dx × dy / b_eff, where b_eff is the
-      effective coupling depth (~ near-surface flow path length, default 1 m).
+      effective coupling depth (default 10 m — much larger than 1 cell depth to
+      avoid over-draining; increase further for more resistive seepage faces).
       This follows Rushton (2003) and Beven (1981) for diffuse seepage faces.
       If hk_arr is not provided, falls back to the scalar k_bed / b_bed formula
       for backward compatibility.
+
+    .. note::
+        Setting b_eff too small (e.g. 1 m with 100 m cells) produces drain
+        conductances comparable to the aquifer lateral transmissivity, causing
+        the upland drain to remove more water than recharge can supply and
+        driving spurious inflow from the sea CHD boundary.
 
     Parameters
     ----------
@@ -188,7 +195,10 @@ def build_boundary_arrays(dem_arr, sw_arr, sea_arr, active_arr, delr, delc,
         When provided, upland seepage-face conductance scales as K × area / b_eff.
     b_eff : float
         Effective coupling depth for upland seepage-face cells (m).  Controls
-        how tightly the drain conductance tracks the aquifer K.  Default 1.0 m.
+        how tightly the drain conductance tracks the aquifer K.  Default 10.0 m.
+        Smaller values produce higher conductances; values much smaller than
+        the cell size relative to aquifer transmissivity can cause over-drainage
+        and spurious sea inflow.  Increase to make the seepage face more passive.
 
     Returns
     -------
@@ -228,11 +238,12 @@ def build_boundary_arrays(dem_arr, sw_arr, sea_arr, active_arr, delr, delc,
             anchor_description = f"lowest active edge cell at row={r0}, col={c0}"
 
     # Drain (seepage face) on all active, non-sea cells that are not already CHD.
-    # Drain elevation: just below land surface (1 m for upland; 0.15 m for SW cells).
+    # Drain elevation: at land surface for upland (true seepage face — activates
+    # only when WT reaches the surface); 0.15 m below DEM for SW cells.
     # SW cells with sw_arr==3 are sea-coded in the surface-water raster; exclude them.
     land_sw = (sw_arr > 0) & (sw_arr < 3) & (sea_arr != 1)
     drn_mask = active_arr & (sea_arr != 1) & ~chd_mask
-    drn_elev = np.where(land_sw, dem_arr - 0.15, dem_arr - 1.0)
+    drn_elev = np.where(land_sw, dem_arr - 0.15, dem_arr)
 
     # ── Drain conductance ─────────────────────────────────────────────────────
     # SW cells: streambed / lake-bed clogging layer (fixed K_bed material).
@@ -525,7 +536,7 @@ def simulate(
     sea_level_m=0.0,
     k_bed=2e-6,
     b_bed=1.0,
-    b_eff=1.0,
+    b_eff=10.0,
     wells=None,
 ):
     """
@@ -567,7 +578,7 @@ def simulate(
         Streambed / lake-bed thickness for SW drain cells (m).
     b_eff : float
         Effective coupling depth for upland seepage-face drain cells (m).
-        Upland conductance = K[r,c] × dx × dy / b_eff.  Default 1.0.
+        Upland conductance = K[r,c] × dx × dy / b_eff.  Default 10.0.
     wells : list of dict, optional
         List of pumping/injection wells.  Each dict must have:
           'row'        : int  – row index (0-based)
@@ -1295,23 +1306,148 @@ def seepage_flux_stats(drn_flux, active_arr, sw_arr, sea_arr, delr, delc):
     }
 
 
+def sea_flux_from_darcy(head_arr, hk_arr, sea_arr, active_arr, delr, delc,
+                        aquifer_thickness_m):
+    """
+    Estimate the total groundwater flux into the sea using face-centred Darcy
+    fluxes at the land/sea interface.
+
+    For every active land cell that borders a sea cell (horizontally or
+    vertically), the flux through the shared face is:
+
+        Q_face = K_land * T_land * (h_land - h_sea) / (0.5 * delr_or_c)
+                 * face_width * aquifer_thickness
+
+    where ``T_land`` is the transmissivity of the land cell (K * b), the
+    hydraulic gradient uses a half-cell distance (face is at the cell edge,
+    shared boundary head is the sea-cell head), and ``face_width`` is the
+    perpendicular cell dimension.
+
+    Only net seaward flow (positive, i.e. land head > sea head) is summed;
+    net landward flow contributes negative values (inflow from the sea).
+
+    Parameters
+    ----------
+    head_arr : ndarray      – Modelled hydraulic head (m a.s.l.).  NaN outside active.
+    hk_arr   : ndarray      – Hydraulic conductivity field (m/s).
+    sea_arr  : ndarray      – Sea mask (1 = sea, 0 = land).
+    active_arr : ndarray    – Boolean mask of active model cells.
+    delr, delc : float      – Cell dimensions (m); delr = N-S, delc = E-W.
+    aquifer_thickness_m : float – Uniform aquifer thickness (m).
+
+    Returns
+    -------
+    sea_flux_m3s : float
+        Net groundwater flux towards the sea (m³/s).
+        Positive = water leaving the aquifer to the sea.
+        Negative = water entering the aquifer from the sea (reversed gradient).
+    sea_flux_map : ndarray
+        Per-cell contribution to sea flux (m³/s), NaN outside interface cells.
+        Positive = cell discharges to sea; negative = cell receives from sea.
+    """
+    nrow, ncol = head_arr.shape
+    is_sea = (sea_arr == 1)
+
+    # Fill NaN heads for sea cells with sea-level head (0 m, or as-is if present)
+    h = np.where(np.isfinite(head_arr), head_arr, 0.0)
+    # For sea cells the effective head is 0 m (sea level)
+    h = np.where(is_sea, 0.0, h)
+
+    sea_flux_map = np.full_like(head_arr, np.nan)
+    total = 0.0
+
+    # Iterate over the four cardinal neighbours of each active land cell.
+    # Check right (east), left (west), down (south), up (north).
+    land = active_arr & ~is_sea
+
+    # Right face: land cell (r,c) — sea cell (r, c+1)
+    mask_e = land[:, :-1] & is_sea[:, 1:]
+    if mask_e.any():
+        dh = h[:, :-1] - h[:, 1:]          # head difference (land minus sea=0)
+        dist = 0.5 * delc                   # half-cell distance to shared face
+        k_l  = hk_arr[:, :-1]
+        q_face = k_l * aquifer_thickness_m * dh / dist * delr  # m³/s per cell
+        contrib = np.where(mask_e, q_face, 0.0)
+        sea_flux_map[:, :-1] = np.where(
+            mask_e,
+            np.nan_to_num(sea_flux_map[:, :-1], nan=0.0) + contrib,
+            sea_flux_map[:, :-1],
+        )
+        total += float(contrib.sum())
+
+    # Left face: land cell (r,c) — sea cell (r, c-1)
+    mask_w = land[:, 1:] & is_sea[:, :-1]
+    if mask_w.any():
+        dh = h[:, 1:] - h[:, :-1]
+        dist = 0.5 * delc
+        k_l  = hk_arr[:, 1:]
+        q_face = k_l * aquifer_thickness_m * dh / dist * delr
+        contrib = np.where(mask_w, q_face, 0.0)
+        sea_flux_map[:, 1:] = np.where(
+            mask_w,
+            np.nan_to_num(sea_flux_map[:, 1:], nan=0.0) + contrib,
+            sea_flux_map[:, 1:],
+        )
+        total += float(contrib.sum())
+
+    # Down face: land cell (r,c) — sea cell (r+1, c)
+    mask_s = land[:-1, :] & is_sea[1:, :]
+    if mask_s.any():
+        dh = h[:-1, :] - h[1:, :]
+        dist = 0.5 * delr
+        k_l  = hk_arr[:-1, :]
+        q_face = k_l * aquifer_thickness_m * dh / dist * delc
+        contrib = np.where(mask_s, q_face, 0.0)
+        sea_flux_map[:-1, :] = np.where(
+            mask_s,
+            np.nan_to_num(sea_flux_map[:-1, :], nan=0.0) + contrib,
+            sea_flux_map[:-1, :],
+        )
+        total += float(contrib.sum())
+
+    # Up face: land cell (r,c) — sea cell (r-1, c)
+    mask_n = land[1:, :] & is_sea[:-1, :]
+    if mask_n.any():
+        dh = h[1:, :] - h[:-1, :]
+        dist = 0.5 * delr
+        k_l  = hk_arr[1:, :]
+        q_face = k_l * aquifer_thickness_m * dh / dist * delc
+        contrib = np.where(mask_n, q_face, 0.0)
+        sea_flux_map[1:, :] = np.where(
+            mask_n,
+            np.nan_to_num(sea_flux_map[1:, :], nan=0.0) + contrib,
+            sea_flux_map[1:, :],
+        )
+        total += float(contrib.sum())
+
+    return total, sea_flux_map
+
+
 def water_budget(drn_flux, rch, active_arr, sw_arr, sea_arr, delr, delc,
-                 rch_multiplier=1.0):
+                 rch_multiplier=1.0,
+                 head_arr=None, hk_arr=None, aquifer_thickness_m=None):
     """
     Compute a catchment-wide water budget with components in m³/s and mm/yr.
 
     At steady state the budget must close:
-        Recharge = SW discharge + Upland seepage + Sea discharge
+        Recharge = Lake discharge + River discharge + Upland seepage + Sea discharge
 
-    Sea discharge cannot be read directly from the model drain budget (the
-    constant-head sea boundary flux is not stored in diagnostics).  It is
-    therefore derived as the residual of the above mass balance.  A non-zero
-    ``budget_imbalance_mm_yr`` indicates that the model has not fully converged
-    or that recharge is applied over slightly different cells than intended.
+    Surface-water discharge is split into **lake** (sw==1) and **river** (sw==2)
+    components.
+
+    Sea discharge is estimated in two ways:
+
+    1. **Darcy face-flux** (preferred): when ``head_arr``, ``hk_arr``, and
+       ``aquifer_thickness_m`` are provided, the flux is computed explicitly at
+       the land/sea interface using face-centred finite differences (see
+       ``sea_flux_from_darcy``).  This is the physically correct estimate.
+
+    2. **Mass-balance residual** (fallback / cross-check): computed as
+       Recharge − SW discharge − Upland seepage.  Returned as
+       ``sea_discharge_residual_mm_yr`` for comparison.
 
     All mm/yr values are normalised by the **active land area** (active cells
-    excluding sea cells), giving a meaningful spatial average equivalent to the
-    depth of water per unit catchment area.
+    excluding sea cells).
 
     Parameters
     ----------
@@ -1329,23 +1465,37 @@ def water_budget(drn_flux, rch, active_arr, sw_arr, sea_arr, delr, delc,
         Cell dimensions (m).
     rch_multiplier : float
         Recharge multiplier applied to *rch* (default 1.0 = present-day).
+    head_arr : ndarray or None
+        Modelled hydraulic head (m a.s.l.).  Required for Darcy sea flux.
+    hk_arr : ndarray or None
+        Hydraulic conductivity field (m/s).  Required for Darcy sea flux.
+    aquifer_thickness_m : float or None
+        Aquifer thickness (m).  Required for Darcy sea flux.
 
     Returns
     -------
     dict with keys:
-        'land_area_m2'           – active land area (m²).
-        'n_land_cells'           – number of active non-sea cells.
-        'recharge_m3_s'          – total recharge entering the model (m³/s).
-        'sw_discharge_m3_s'      – discharge to rivers/lakes (m³/s).
-        'upland_seepage_m3_s'    – seepage outside SW cells (m³/s).
-        'sea_discharge_m3_s'     – sea discharge by mass balance (m³/s).
-        'recharge_mm_yr'         – recharge normalised by land area (mm/yr).
-        'sw_discharge_mm_yr'     – SW discharge per land area (mm/yr).
-        'upland_seepage_mm_yr'   – upland seepage per land area (mm/yr).
-        'sea_discharge_mm_yr'    – sea discharge per land area (mm/yr).
-        'budget_imbalance_mm_yr' – residual imbalance (m³/s → mm/yr); ≈0 if
-                                   the model has converged (should be < 1 mm/yr).
-        'rch_multiplier'         – the multiplier used in this call.
+        'land_area_m2'                – active land area (m²).
+        'n_land_cells'                – number of active non-sea cells.
+        'rch_multiplier'              – the multiplier used.
+        'recharge_m3_s'               – total recharge (m³/s).
+        'lake_discharge_m3_s'         – discharge to lakes (m³/s).
+        'river_discharge_m3_s'        – discharge to rivers (m³/s).
+        'sw_discharge_m3_s'           – total SW discharge (lake + river, m³/s).
+        'upland_seepage_m3_s'         – seepage outside SW cells (m³/s).
+        'sea_discharge_darcy_m3_s'    – sea flux via Darcy face method (m³/s);
+                                        NaN if head_arr / hk_arr not provided.
+        'sea_discharge_residual_m3_s' – sea flux as mass-balance residual (m³/s).
+        'sea_flux_map'                – per-cell sea-interface flux (m³/s) or None.
+        'recharge_mm_yr'
+        'lake_discharge_mm_yr'
+        'river_discharge_mm_yr'
+        'sw_discharge_mm_yr'
+        'upland_seepage_mm_yr'
+        'sea_discharge_darcy_mm_yr'
+        'sea_discharge_residual_mm_yr'
+        'budget_imbalance_darcy_mm_yr'   – Recharge − all outputs (Darcy sea).
+        'budget_imbalance_residual_mm_yr'– always ≈ 0 by construction.
     """
     cell_area = delr * delc
     sec_per_yr = 365.25 * 86400.0
@@ -1353,47 +1503,87 @@ def water_budget(drn_flux, rch, active_arr, sw_arr, sea_arr, delr, delc,
     # Boolean helpers
     is_sea = (sea_arr == 1) & active_arr
     land_active = active_arr & ~is_sea
-    land_sw = (sw_arr > 0) & (sw_arr < 3) & land_active
-    upland = land_active & ~land_sw
+    lake_sw  = (sw_arr == 1) & land_active
+    river_sw = (sw_arr == 2) & land_active
+    land_sw  = lake_sw | river_sw
+    upland   = land_active & ~land_sw
 
     # Active land area used as denominator for mm/yr conversion
     n_land = int(land_active.sum())
     land_area_m2 = n_land * cell_area
 
     def _to_mm_yr(q_m3s):
+        if q_m3s is None or (isinstance(q_m3s, float) and np.isnan(q_m3s)):
+            return np.nan
         return q_m3s * sec_per_yr * 1000.0 / land_area_m2
 
     # IN: total recharge over all active land cells
     rch_eff = rch * rch_multiplier
     recharge_m3s = float(np.where(land_active, rch_eff * cell_area, 0.0).sum())
 
-    # OUT: seepage at mapped SW cells (rivers and lakes, excluding sea)
-    sw_discharge_m3s = float(np.where(land_sw, np.maximum(drn_flux, 0.0), 0.0).sum())
+    # OUT: discharge split by SW type
+    lake_discharge_m3s  = float(np.where(lake_sw,  np.maximum(drn_flux, 0.0), 0.0).sum())
+    river_discharge_m3s = float(np.where(river_sw, np.maximum(drn_flux, 0.0), 0.0).sum())
+    sw_discharge_m3s    = lake_discharge_m3s + river_discharge_m3s
 
-    # OUT: seepage at active non-SW land cells (springs/upland wetlands)
+    # OUT: upland seepage
     upland_seepage_m3s = float(np.where(upland, np.maximum(drn_flux, 0.0), 0.0).sum())
 
-    # OUT (residual): sea discharge estimated by steady-state mass balance
-    sea_discharge_m3s = recharge_m3s - sw_discharge_m3s - upland_seepage_m3s
+    # OUT: sea discharge — direct Darcy face-flux estimate
+    sea_flux_map = None
+    if head_arr is not None and hk_arr is not None and aquifer_thickness_m is not None:
+        sea_darcy_m3s, sea_flux_map = sea_flux_from_darcy(
+            head_arr, hk_arr, sea_arr, active_arr, delr, delc, aquifer_thickness_m)
+    else:
+        sea_darcy_m3s = np.nan
 
-    # Imbalance check (should be ≈ 0 at convergence; derived from total drain
-    # output vs. computed recharge, before the mass-balance step above)
-    total_out_drain = sw_discharge_m3s + upland_seepage_m3s
-    imbalance_m3s = recharge_m3s - total_out_drain - sea_discharge_m3s  # = 0 by construction
+    # OUT (residual): sea discharge as steady-state mass balance
+    sea_residual_m3s = recharge_m3s - sw_discharge_m3s - upland_seepage_m3s
+
+    # Warn if residual is negative (overactive drains)
+    if sea_residual_m3s < 0:
+        import warnings as _w
+        _w.warn(
+            f"Water budget: sea_discharge residual is NEGATIVE "
+            f"({_to_mm_yr(sea_residual_m3s):.1f} mm/yr). "
+            "SW/upland drains are removing more water than recharge supplies — "
+            "the CHD sea boundary is acting as a net source. "
+            "Check drain_coupling_depth_m (b_eff) and drain elevation settings.",
+            UserWarning, stacklevel=2,
+        )
+
+    # Imbalance when using Darcy sea estimate
+    if not np.isnan(sea_darcy_m3s):
+        imbalance_darcy_m3s = (recharge_m3s
+                               - lake_discharge_m3s - river_discharge_m3s
+                               - upland_seepage_m3s - sea_darcy_m3s)
+    else:
+        imbalance_darcy_m3s = np.nan
+
+    # Residual imbalance is 0 by construction
+    imbalance_residual_m3s = 0.0
 
     return {
-        'land_area_m2':            land_area_m2,
-        'n_land_cells':            n_land,
-        'rch_multiplier':          rch_multiplier,
-        'recharge_m3_s':           recharge_m3s,
-        'sw_discharge_m3_s':       sw_discharge_m3s,
-        'upland_seepage_m3_s':     upland_seepage_m3s,
-        'sea_discharge_m3_s':      sea_discharge_m3s,
-        'recharge_mm_yr':          _to_mm_yr(recharge_m3s),
-        'sw_discharge_mm_yr':      _to_mm_yr(sw_discharge_m3s),
-        'upland_seepage_mm_yr':    _to_mm_yr(upland_seepage_m3s),
-        'sea_discharge_mm_yr':     _to_mm_yr(sea_discharge_m3s),
-        'budget_imbalance_mm_yr':  _to_mm_yr(imbalance_m3s),
+        'land_area_m2':                    land_area_m2,
+        'n_land_cells':                    n_land,
+        'rch_multiplier':                  rch_multiplier,
+        'recharge_m3_s':                   recharge_m3s,
+        'lake_discharge_m3_s':             lake_discharge_m3s,
+        'river_discharge_m3_s':            river_discharge_m3s,
+        'sw_discharge_m3_s':               sw_discharge_m3s,
+        'upland_seepage_m3_s':             upland_seepage_m3s,
+        'sea_discharge_darcy_m3_s':        sea_darcy_m3s,
+        'sea_discharge_residual_m3_s':     sea_residual_m3s,
+        'sea_flux_map':                    sea_flux_map,
+        'recharge_mm_yr':                  _to_mm_yr(recharge_m3s),
+        'lake_discharge_mm_yr':            _to_mm_yr(lake_discharge_m3s),
+        'river_discharge_mm_yr':           _to_mm_yr(river_discharge_m3s),
+        'sw_discharge_mm_yr':              _to_mm_yr(sw_discharge_m3s),
+        'upland_seepage_mm_yr':            _to_mm_yr(upland_seepage_m3s),
+        'sea_discharge_darcy_mm_yr':       _to_mm_yr(sea_darcy_m3s),
+        'sea_discharge_residual_mm_yr':    _to_mm_yr(sea_residual_m3s),
+        'budget_imbalance_darcy_mm_yr':    _to_mm_yr(imbalance_darcy_m3s),
+        'budget_imbalance_residual_mm_yr': _to_mm_yr(imbalance_residual_m3s),
     }
 
 
