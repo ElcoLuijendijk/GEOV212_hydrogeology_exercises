@@ -832,22 +832,54 @@ def check_drain_activation(head_arr, diagnostics, sw, sea, active):
 
 def infer_base_k(row):
     """
-    Infer a base hydraulic conductivity (m/s) from groundwater/infiltration
-    potential text stored in a geology legend row.
+    Infer a base hydraulic conductivity (m/s) from a geology legend row.
 
-    Text is matched against Norwegian keywords (e.g. 'betydelig', 'lite').
-    Returns a default of 3e-6 m/s if no keyword matches.
+    Two look-up paths are used:
+
+    1. **Løsmasse (Quaternary) rows** — matched against Norwegian groundwater /
+       infiltration potential keywords in the ``gw_potential`` and
+       ``inf_potential`` columns (e.g. 'betydelig', 'mulig', 'lite', 'ikke').
+
+    2. **Bedrock rows** (source = 'berggrunn_n50') — matched against common
+       Norwegian lithology names in the ``deposit_type`` column.
+       K values follow Gleeson et al. (2011), Table 1.
+
+    Returns a default of 3e-6 m/s when no keyword matches.
     """
+    # ── Path 1: løsmasse potential text ──────────────────────────────────────
     txt = f"{row.get('gw_potential', '')} {row.get('inf_potential', '')}".lower()
     if "betydelig" in txt or "godt egnet" in txt:
-        return 8e-5
+        return 8e-5   # high potential: gravel, coarse sand
     if "mulig" in txt or "egnet" in txt:
-        return 2e-5
+        return 2e-5   # moderate potential: fine sand, silty deposits
     if "lite" in txt:
-        return 5e-6
+        return 5e-6   # low potential: till, moraine
     if "ikke" in txt or "uegnet" in txt:
-        return 8e-7
-    return 3e-6
+        return 8e-7   # very low potential: compact till, peat
+
+    # ── Path 2: bedrock lithology name ───────────────────────────────────────
+    # Reached when gw_potential / inf_potential are empty (e.g. Berggrunn N50).
+    dep = str(row.get('deposit_type', '')).lower()
+
+    # Carbonate rocks: slightly elevated K due to fracturing / dissolution
+    if any(kw in dep for kw in ['kalkstein', 'dolomitt', 'marmor', 'kalk']):
+        return 2e-7
+
+    # Porous sedimentary rocks: sandstone, conglomerate
+    if any(kw in dep for kw in ['sandstein', 'konglomerat', 'arkose', 'vake']):
+        return 5e-7
+
+    # Crystalline and metamorphic bedrock — typical Norwegian basement
+    _bedrock_kws = [
+        'gneis', 'granitt', 'granodior', 'monzon', 'syenitt', 'dioritt',
+        'gabro', 'tonalit', 'larvikitt', 'anortositt',        # igneous
+        'skifer', 'fylitt', 'kvartsitt', 'amfibo', 'glimmer', 'migmatitt',  # metamorphic
+        'basalt', 'diabas', 'ryolitt', 'porfyr', 'grønnstein',              # volcanic
+    ]
+    if any(kw in dep for kw in _bedrock_kws):
+        return 5e-8   # fractured crystalline rock (Gleeson 2011: 10^-8 to 10^-6)
+
+    return 3e-6  # fallback for unrecognised unit types
 
 
 def make_base_k_by_geology(geo, legend_df, active):
@@ -967,8 +999,16 @@ def combined_calibration_loss(
     Compute a scalar calibration loss that combines multiple goodness-of-fit
     criteria into a single value to minimise.
 
-    Each term is normalised to a [0, 1] range so that the weights are
-    directly comparable.  A higher loss means a worse calibration.
+    Terms are scaled to comparable magnitudes (but not all constrained to
+    [0, 1]) so that weights can be interpreted consistently. A higher loss
+    means a worse calibration.
+
+    Scaling used:
+    - rmse_term     = rmse / 10
+    - r2_term       = 1 - clamp(r2, -1, 1)
+    - seep_term     = 1 - seepage_match_fraction
+    - sw_stage_term = min(surfacewater_stage_rmse_m / 3, 5)
+    - below_wt_term = below_wt_fraction
 
     Parameters
     ----------
@@ -1357,7 +1397,7 @@ def water_budget(drn_flux, rch, active_arr, sw_arr, sea_arr, delr, delc,
     }
 
 
-def make_k_by_geo_groups(geo_arr, active_arr, groups):
+def make_k_by_geo_groups(geo_arr, active_arr, groups, allow_fallback=True):
     """
     Assign each active cell to a user-defined geology calibration group.
 
@@ -1379,8 +1419,12 @@ def make_k_by_geo_groups(geo_arr, active_arr, groups):
                 'bedrock':    [1, 5, 9, 14],  # Older bedrock
             }
 
-        Active cells whose geology ID does not appear in any group are
-        automatically assigned to the **last** group as a fallback.
+        Active cells whose geology ID does not appear in any group are, by
+        default, assigned to the **last** group as a fallback.
+    allow_fallback : bool, optional
+        If True (default), active cells not covered by any provided unit list
+        are assigned to the last group. If False, a ValueError is raised when
+        unassigned active cells are detected.
 
     Returns
     -------
@@ -1397,11 +1441,17 @@ def make_k_by_geo_groups(geo_arr, active_arr, groups):
         for uid in ids:
             labels[(geo_arr == uid) & active_arr] = i
 
-    # Any active cell with no matching group → fallback to the last group.
-    last = len(group_names) - 1
     unassigned = active_arr & (labels == -1)
     if unassigned.any():
-        labels[unassigned] = last
+        if allow_fallback:
+            last = len(group_names) - 1
+            labels[unassigned] = last
+        else:
+            missing_ids = np.unique(geo_arr[unassigned]).astype(int).tolist()
+            raise ValueError(
+                "Unassigned active geology unit IDs: "
+                f"{missing_ids}. Add them to groups or enable fallback."
+            )
 
     return labels, group_names
 

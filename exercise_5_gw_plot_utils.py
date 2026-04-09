@@ -125,15 +125,16 @@ def add_map_overlays(ax, grid):
 
 def plot_model_output(head, diagnostics, hk_arr, label, grid, show_obs=None):
     """
-    5-panel single-column spatial overview for one calibration scenario.
+    6-panel single-column spatial overview for one calibration scenario.
 
     Panels
     ------
     A  Water-table elevation (m a.s.l.) — filled contour + contour lines
     B  Depth to water table (m; diverging colormap, blue = above surface)
-    C  Darcy flux magnitude (m/yr, linear, 98th-percentile clip) + streamlines
-    D  Seepage/drainage flux (mm/yr, linear) with surface-water overlay
-    E  log₁₀ Transmissivity (m²/s)
+    C  Darcy flux magnitude (m/yr) + black flow arrows
+    D  Seepage/drainage flux (mm/yr, all land) with surface-water overlay
+    E  Flux to surface water (mm/yr, at river/lake cells only)
+    F  log₁₀ Transmissivity (m²/s)
 
     Parameters
     ----------
@@ -156,7 +157,7 @@ def plot_model_output(head, diagnostics, hk_arr, label, grid, show_obs=None):
 
     wt_depth = np.where(active, dem - head, np.nan)
     qx_l, qy_l, q_mag_l = gwu.compute_darcy_flux(head, hk_arr, delr, delc, active)
-    sw_arr  = np.where(sw_cells, 1, 0)   # treat all sw_cells as type 1 for stats
+    sw_arr  = np.where(sw_cells, 1, 0)
     sea_int = is_sea.astype(int)
     seep_s  = gwu.seepage_flux_stats(diagnostics['drn_flux'], active,
                                      sw_arr, sea_int, delr, delc)
@@ -164,13 +165,14 @@ def plot_model_output(head, diagnostics, hk_arr, label, grid, show_obs=None):
 
     T_log = np.where(active & (hk_arr > 0),
                      np.log10(np.maximum(hk_arr * aquifer_thickness_m, 1e-12)), np.nan)
-    q_myr_plot = np.where(active & np.isfinite(q_mag_l),
-                          q_mag_l * _S_PER_YR, np.nan)
-    seep_plot  = np.where(active & ~is_sea & (seep_map > 0), seep_map, np.nan)
+    q_myr_plot  = np.where(active & np.isfinite(q_mag_l),
+                           q_mag_l * _S_PER_YR, np.nan)
+    seep_plot   = np.where(active & ~is_sea & (seep_map > 0), seep_map, np.nan)
+    sw_flux_plot = np.where(sw_cells & ~is_sea & (seep_map > 0), seep_map, np.nan)
 
     ph = _panel_h(nrow, ncol)
-    fig, axes = plt.subplots(5, 1, figsize=(7, 5 * ph))
-    fig.subplots_adjust(left=0.10, right=0.92, top=0.96, bottom=0.02, hspace=0.55)
+    fig, axes = plt.subplots(6, 1, figsize=(7, 6 * ph))
+    fig.subplots_adjust(left=0.10, right=0.92, top=0.97, bottom=0.01, hspace=0.55)
 
     # A: water-table elevation
     vlo = np.nanpercentile(head[active], 2)
@@ -182,7 +184,7 @@ def plot_model_output(head, diagnostics, hk_arr, label, grid, show_obs=None):
     axes[0].contour(_x, _y, _hm, levels=_levels, colors='k', linewidths=0.25, alpha=0.4)
     axes[0].set_xlim(-0.5, ncol - 0.5)
     axes[0].set_ylim(nrow - 0.5, -0.5)
-    axes[0].set_title(f'A) Water-table elevation – {label} (m a.s.l.)', fontsize=9)
+    axes[0].set_title(f'A) Water-table elevation – {label} (m a.s.l.)')
     _cbar(cf0, axes[0], 'Head (m a.s.l.)')
     if show_obs is not None and not show_obs.empty:
         _obs_cmap = plt.cm.plasma
@@ -194,7 +196,6 @@ def plot_model_output(head, diagnostics, hk_arr, label, grid, show_obs=None):
             sc_obs0 = axes[0].scatter(show_obs['c'], show_obs['r'],
                                       c=_obs_d, cmap=_obs_cmap, norm=_obs_n,
                                       edgecolors='0.4', s=90, linewidths=1.2, zorder=8)
-            # Compact horizontal colorbar inset at bottom-right of map panel
             _cax_d = axes[0].inset_axes([0.52, 0.02, 0.40, 0.04])
             _cb_d  = plt.colorbar(sc_obs0, cax=_cax_d, orientation='horizontal')
             _cb_d.set_label('Obs WT depth (m)', fontsize=6)
@@ -218,38 +219,44 @@ def plot_model_output(head, diagnostics, hk_arr, label, grid, show_obs=None):
     im1 = axes[1].imshow(wt_depth, cmap=cmc.vik, norm=wt_norm)
     axes[1].set_title(
         f'B) Depth to water table – {label}\n'
-        'Blue = above surface (springs); white = at surface; red = deep',
-        fontsize=9)
+        'Blue = above surface (springs); white = at surface; red = deep')
     _cbar(im1, axes[1], 'WT depth (m below surface)')
 
-    # C: Darcy flux magnitude + streamlines
+    # C: Darcy flux magnitude + black flow arrows
     _valid_q = q_myr_plot[np.isfinite(q_myr_plot)]
     _q_hi = float(np.nanpercentile(_valid_q, 98)) if len(_valid_q) > 0 else 1.0
-    im2 = axes[2].imshow(q_myr_plot, cmap=cmc.lajolla, vmin=0, vmax=_q_hi)
-    axes[2].set_title(f'C) Darcy flux magnitude – {label} (m/yr)', fontsize=9)
+    im2 = axes[2].imshow(q_myr_plot, cmap='YlOrBr', vmin=0, vmax=_q_hi)
+    axes[2].set_title(f'C) Darcy flux magnitude – {label} (m/yr)')
     _cbar(im2, axes[2], '|q| (m/yr)')
     u_p = np.nan_to_num(qx_l, nan=0.0)
     v_p = np.nan_to_num(qy_l, nan=0.0)
     try:
         axes[2].streamplot(np.arange(ncol), np.arange(nrow), u_p, v_p,
-                           color='0.2', linewidth=1.1, arrowsize=1.5,
+                           color='k', linewidth=0.9, arrowsize=1.3,
                            arrowstyle='-|>', density=0.7, zorder=5)
     except Exception:
         pass
 
-    # D: seepage / drainage
+    # D: seepage / drainage (all land cells)
     _valid_s = seep_plot[np.isfinite(seep_plot)]
     _seep_hi = float(np.nanpercentile(_valid_s, 98)) if len(_valid_s) > 0 else 1.0
-    im3 = axes[3].imshow(seep_plot, cmap=cmc.lajolla, vmin=0, vmax=_seep_hi)
-    axes[3].set_title(f'D) Seepage / drainage flux – {label} (mm/yr)', fontsize=9)
+    im3 = axes[3].imshow(seep_plot, cmap='YlGnBu', vmin=0, vmax=_seep_hi)
+    axes[3].set_title(f'D) Seepage / drainage flux – {label} (mm/yr)')
     _cbar(im3, axes[3], 'Seepage (mm/yr)')
     sw_ov = np.ma.masked_where(~sw_cells, np.ones(dem.shape))
     axes[3].imshow(sw_ov, cmap='Blues', alpha=0.35, vmin=0, vmax=1)
 
-    # E: transmissivity
-    im4 = axes[4].imshow(T_log, cmap=cmc.batlow)
-    axes[4].set_title(f'E) log₁₀ Transmissivity – {label} (m²/s)', fontsize=9)
-    _cbar(im4, axes[4], 'log₁₀(T [m²/s])')
+    # E: flux to surface water (rivers/lakes only)
+    _valid_sw = sw_flux_plot[np.isfinite(sw_flux_plot)]
+    _sw_hi = float(np.nanpercentile(_valid_sw, 98)) if len(_valid_sw) > 0 else 1.0
+    im4 = axes[4].imshow(sw_flux_plot, cmap='Blues', vmin=0, vmax=_sw_hi)
+    axes[4].set_title(f'E) Flux to surface water – {label} (mm/yr)')
+    _cbar(im4, axes[4], 'SW flux (mm/yr)')
+
+    # F: transmissivity
+    im5 = axes[5].imshow(T_log, cmap=cmc.batlow)
+    axes[5].set_title(f'F) log₁₀ Transmissivity – {label} (m²/s)')
+    _cbar(im5, axes[5], 'log₁₀(T [m²/s])')
 
     for ax in axes:
         add_map_ticks(ax, grid)
@@ -338,7 +345,7 @@ def plot_calibration_comparison(head, diagnostics, eval_df, obs_stats, targets,
     axes[0].contour(_x, _y, _hm, levels=_levels, colors='k', linewidths=0.25, alpha=0.4)
     axes[0].set_xlim(-0.5, ncol - 0.5)
     axes[0].set_ylim(nrow - 0.5, -0.5)
-    axes[0].set_title(f'A) Modelled water-table elevation – {label} (m a.s.l.)', fontsize=9)
+    axes[0].set_title(f'A) Modelled water-table elevation – {label} (m a.s.l.)')
     _cbar(cf0, axes[0], 'Head (m a.s.l.)')
     if not ef.empty and 'c' in ef.columns:
         _sc_kw = dict(edgecolors='0.4', s=100, linewidths=1.2, zorder=8)
@@ -395,8 +402,7 @@ def plot_calibration_comparison(head, diagnostics, eval_df, obs_stats, targets,
     axes[2].set_title(
         f'C) Gaining / losing reaches – {label}\n'
         f'{below_wt.sum()} of {sw_cells.sum()} SW cells losing '
-        f'({targets["below_wt_fraction"]:.1%})',
-        fontsize=9)
+        f'({targets["below_wt_fraction"]:.1%})')
     _cbar(im2, axes[2], '0 = gaining  |  1 = losing', ticks=[0, 1])
     add_map_ticks(axes[2], grid)
     add_map_overlays(axes[2], grid)
@@ -507,8 +513,7 @@ def plot_cross_sections(transects, head, dem, sw, drn_flux, active,
     ov.set_xlim(-0.5, ncol - 0.5)
     ov.set_ylim(nrow - 0.5, -0.5)
     ov.set_title(
-        f'Cross-section locations – water-table elevation (m a.s.l.) – {label}',
-        fontsize=9)
+        f'Cross-section locations – water-table elevation (m a.s.l.) – {label}')
     ov.set_xlabel('Grid column', fontsize=8)
     ov.set_ylabel('Grid row', fontsize=8)
     ov.tick_params(labelsize=7)
@@ -577,7 +582,7 @@ def plot_cross_sections(transects, head, dem, sw, drn_flux, active,
         ax.set_ylim(ymin, ymax)
         ax.set_xlabel('Distance along section (km)')
         ax.set_ylabel('Elevation (m a.s.l.)')
-        ax.set_title(f'{tr["label"]} — {label}', fontsize=9, color=clr)
+        ax.set_title(f'{tr["label"]} — {label}', color=clr)
 
         # Endpoint labels (A/B, C/D, …) at the left and right margins
         lbl_start, lbl_end = _endpoint_labels[i_sec % len(_endpoint_labels)]
