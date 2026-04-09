@@ -233,7 +233,7 @@ def plot_model_output(head, diagnostics, hk_arr, label, grid, show_obs=None):
     # C: Darcy flux magnitude + black flow arrows
     _valid_q = q_myr_plot[np.isfinite(q_myr_plot)]
     _q_hi = float(np.nanpercentile(_valid_q, 98)) if len(_valid_q) > 0 else 1.0
-    im2 = axes[2].imshow(q_myr_plot, cmap='YlOrBr', vmin=0, vmax=_q_hi)
+    im2 = axes[2].imshow(q_myr_plot, cmap=cmc.roma, vmin=0, vmax=_q_hi)
     axes[2].set_title(f'C) Darcy flux magnitude – {label} (m/yr)')
     _cbar(im2, axes[2], '|q| (m/yr)')
     u_p = np.nan_to_num(qx_l, nan=0.0)
@@ -248,16 +248,16 @@ def plot_model_output(head, diagnostics, hk_arr, label, grid, show_obs=None):
     # D: seepage / drainage (all land cells)
     _valid_s = seep_plot[np.isfinite(seep_plot)]
     _seep_hi = float(np.nanpercentile(_valid_s, 98)) if len(_valid_s) > 0 else 1.0
-    im3 = axes[3].imshow(seep_plot, cmap='YlGnBu', vmin=0, vmax=_seep_hi)
+    im3 = axes[3].imshow(seep_plot, cmap=cmc.vik, vmin=0, vmax=_seep_hi)
     axes[3].set_title(f'D) Seepage / drainage flux – {label} (mm/yr)')
     _cbar(im3, axes[3], 'Seepage (mm/yr)')
     sw_ov = np.ma.masked_where(~sw_cells, np.ones(dem.shape))
-    axes[3].imshow(sw_ov, cmap='Blues', alpha=0.35, vmin=0, vmax=1)
+    axes[3].imshow(sw_ov, cmap=cmc.lapaz, alpha=0.35, vmin=0, vmax=1)
 
     # E: flux to surface water (rivers/lakes only)
     _valid_sw = sw_flux_plot[np.isfinite(sw_flux_plot)]
     _sw_hi = float(np.nanpercentile(_valid_sw, 98)) if len(_valid_sw) > 0 else 1.0
-    im4 = axes[4].imshow(sw_flux_plot, cmap='Blues', vmin=0, vmax=_sw_hi)
+    im4 = axes[4].imshow(sw_flux_plot, cmap=cmc.lapaz, vmin=0, vmax=_sw_hi)
     axes[4].set_title(f'E) Flux to surface water – {label} (mm/yr)')
     _cbar(im4, axes[4], 'SW flux (mm/yr)')
 
