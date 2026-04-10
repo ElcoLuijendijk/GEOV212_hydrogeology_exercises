@@ -366,6 +366,12 @@ def run_flopy_steady(
         2-D drain outflow array (m3/s, positive = drainage to surface).
     engine : str
         Label 'flopy-mf6'.
+    gwf : flopy.mf6.ModflowGwf
+        The MODFLOW 6 groundwater-flow model object.  Its ``modelgrid``
+        attribute is a fully populated ``StructuredGrid`` that can be passed
+        directly to ``flopy.plot.PlotMapView`` or ``PlotCrossSection``.
+        The simulation workspace (``sim_ws``) is kept on disk so that
+        the modelgrid geometry remains accessible after the function returns.
     """
     if not HAS_FLOPY:
         raise RuntimeError("FLOPY not installed")
@@ -433,7 +439,9 @@ def run_flopy_steady(
     head = np.where(active_arr, head, np.nan)
 
     drn_flux = np.where(drn_mask & (head > drn_elev), drn_cond * (head - drn_elev), 0.0)
-    return head, drn_flux, "flopy-mf6"
+    # sim_ws is intentionally NOT cleaned up so that gwf.modelgrid remains
+    # accessible for plotting via flopy.plot.PlotMapView / PlotCrossSection.
+    return head, drn_flux, "flopy-mf6", gwf
 
 
 def run_iterative_fallback(
@@ -620,7 +628,11 @@ def simulate(
         2-D hydraulic head field (m above sea level). NaN outside active cells.
     diagnostics : dict
         Contains 'engine', 'anchor', 'drn_mask', 'drn_elev', 'drn_cond',
-        'chd_mask', 'chd_head', 'drn_flux'.
+        'chd_mask', 'chd_head', 'drn_flux', and 'modelgrid'.
+        'modelgrid' is a ``flopy.discretization.StructuredGrid`` when the
+        flopy-mf6 engine was used, or ``None`` when the iterative fallback
+        was used (in which case the plotting utilities reconstruct an
+        equivalent grid from the ``grid`` dict).
     """
     drn_mask, drn_elev, drn_cond, chd_mask, chd_head, anchor_desc = build_boundary_arrays(
         dem,
@@ -638,7 +650,7 @@ def simulate(
     rch_use = rch * recharge_multiplier
 
     try:
-        head, drn_flux, engine = run_flopy_steady(
+        head, drn_flux, engine, gwf = run_flopy_steady(
             hk_arr,
             rch_use,
             drn_mask,
@@ -656,6 +668,7 @@ def simulate(
             model_dir,
             wells=wells,
         )
+        modelgrid = gwf.modelgrid
     except Exception as err:
         warnings.warn(f"Using fallback solver because FLOPY/MF6 was unavailable: {err}")
         head, drn_flux, engine = run_iterative_fallback(
@@ -673,6 +686,7 @@ def simulate(
             aquifer_thickness_m,
             wells=wells,
         )
+        modelgrid = None
 
     diagnostics = {
         "engine": engine,
@@ -683,6 +697,7 @@ def simulate(
         "chd_mask": chd_mask,
         "chd_head": chd_head,
         "drn_flux": drn_flux,
+        "modelgrid": modelgrid,
     }
     return head, diagnostics
 
