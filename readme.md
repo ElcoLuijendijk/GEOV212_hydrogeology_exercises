@@ -26,6 +26,61 @@ Please follow one of the following links to open the exercises in [Google Colab]
 * Alternatively you can run the exercises on your own machine too by first downloading this repository using the `<> Code` and the `Clone` or `Download ZIP options` on the top right of this site, installing a Python and Jupyter notebook environment, such as [Anaconda](https://www.anaconda.com/), an editor like [Visual Studio Code](https://code.visualstudio.com/) and then using this to open and run the exercise notebooks in this repository.
 
 
+# Running Exercise 5 Locally
+
+Follow the steps below if you plan to run the exercises on your own machine:
+
+## Prerequisites
+
+- [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or Anaconda installed
+- ~3 GB free disk space for the conda environment
+
+## Setup
+
+**1. Create and activate the environment**
+
+```bash
+conda env create -f environment.yml
+conda activate GEOV212_ex5
+```
+
+**2. Register the kernel with Jupyter**
+
+```bash
+python -m ipykernel install --user --name GEOV212_ex5 --display-name "Python (GEOV212 Ex5)"
+```
+
+**3. Launch JupyterLab**
+
+```bash
+jupyter lab
+```
+
+## Running the notebooks
+
+Run the notebooks in this order, each one produces files that the next one depends on:
+
+| Step | Notebook | Purpose |
+|------|----------|---------|
+| 1 | `exercise_5a_model_data.ipynb` | Download and prepare input data (DEM, geology, hydrology) |
+| 2 | `exercise_5b_gw_model.ipynb` | Build and run the steady-state groundwater model |
+
+
+## MODFLOW 6 executable
+
+The MODFLOW 6 binary (`mf6`) is already included in `tmp_mf6_ex5/bin/`.  
+No separate download is needed. If you get a permission error on macOS/Linux, make it executable:
+
+```bash
+chmod +x tmp_mf6_ex5/bin/mf6
+```
+
+## Notes
+
+- Exercise 5a downloads ~90 MB of bedrock and hydrological data from Norwegian open-data APIs (NGU, NVE). A stable internet connection is required for the first run; subsequent runs reuse cached files.
+- The notebooks were developed and tested on the package versions pinned in `environment.yml`. Newer versions may work but are untested.
+
+
 
 # Feedback
 
