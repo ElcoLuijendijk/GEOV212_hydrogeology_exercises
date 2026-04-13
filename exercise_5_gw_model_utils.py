@@ -380,6 +380,11 @@ def run_flopy_steady(
     if mf6_exe is None:
         raise RuntimeError("mf6 executable not available")
 
+    # Remove leftover run dirs from previous sessions to avoid accumulation.
+    for _old in Path(model_dir).glob("ex5_mf6_*"):
+        if _old.is_dir():
+            shutil.rmtree(_old, ignore_errors=True)
+
     sim_ws = tempfile.mkdtemp(prefix="ex5_mf6_", dir=str(model_dir))
     sim = flopy.mf6.MFSimulation(sim_name="ex5", version="mf6", exe_name=mf6_exe, sim_ws=sim_ws)
     flopy.mf6.ModflowTdis(sim, nper=1, perioddata=[(1.0, 1, 1.0)])
@@ -523,17 +528,22 @@ def run_iterative_fallback(
         # Recharge source term (full, not divided by 4; divided by n_nb below).
         recharge_term = rch_arr * cell_factor
 
-        # Drain removal (explicit: uses current h, stable for small conductances).
+        # Drain removal — IMPLICIT treatment: when drain is active, fold the
+        # drain conductance ratio into the denominator (diagonal) and the
+        # drain-elevation term into the numerator.  This is unconditionally
+        # stable for any C/T ratio (including very large values at SW cells)
+        # and matches the implicit solver used by MODFLOW 6.
         drn_active = drn_mask & (h > drn_elev)
-        drn_term = np.where(
-            drn_active,
-            (drn_cond / np.maximum(transmissivity, 1e-12)) * (h - drn_elev),
-            0.0)
+        drn_ratio  = drn_cond / np.maximum(transmissivity, 1e-12)
+        drn_diag   = np.where(drn_active, drn_ratio, 0.0)   # added to denominator
+        drn_rhs    = np.where(drn_active, drn_ratio * drn_elev, 0.0)  # added to numerator
 
-        # Gauss-Seidel-like update: solve for h given n_nb active neighbours.
-        # For interior cells n_nb = 4; for no-flow boundaries n_nb < 4.
-        h_new = (sum_nb + recharge_term - drn_term) / n_nb
-        h = np.where(active_arr, 0.7 * h + 0.3 * h_new, np.nan)
+        # Jacobi update: solve for h given n_nb active neighbours + implicit drain.
+        # With implicit drain treatment the update is unconditionally stable for
+        # any C/T ratio, so no under-relaxation is needed and full ω=1 Jacobi
+        # gives the fastest convergence.
+        h_new = (sum_nb + recharge_term + drn_rhs) / (n_nb + drn_diag)
+        h = np.where(active_arr, h_new, np.nan)
         h = np.where(chd_mask, chd_head, h)
 
         maxdiff = np.nanmax(np.abs(h - h_old))
@@ -647,7 +657,12 @@ def simulate(
         hk_arr=hk_arr,
         b_eff=b_eff,
     )
-    rch_use = rch * recharge_multiplier
+    # Zero out recharge at sea cells: physically there is no infiltration in
+    # the sea, and applying recharge to CHD cells causes a budget imbalance
+    # because MODFLOW absorbs that recharge into the CHD flux while the
+    # water_budget function only integrates recharge over land cells.
+    _is_sea_loc = (sea == 1) & active
+    rch_use = np.where(_is_sea_loc, 0.0, rch * recharge_multiplier)
 
     try:
         head, drn_flux, engine, gwf = run_flopy_steady(
@@ -1357,13 +1372,14 @@ def sea_flux_from_darcy(head_arr, hk_arr, sea_arr, active_arr, delr, delc,
     For every active land cell that borders a sea cell (horizontally or
     vertically), the flux through the shared face is:
 
-        Q_face = K_land * T_land * (h_land - h_sea) / (0.5 * delr_or_c)
+        Q_face = K_land * T_land * (h_land - h_sea) / delr_or_c
                  * face_width * aquifer_thickness
 
     where ``T_land`` is the transmissivity of the land cell (K * b), the
-    hydraulic gradient uses a half-cell distance (face is at the cell edge,
-    shared boundary head is the sea-cell head), and ``face_width`` is the
-    perpendicular cell dimension.
+    hydraulic gradient uses the full centre-to-centre distance between the
+    land cell and the adjacent CHD sea cell (matching the MODFLOW 6
+    standard conductance formula), and ``face_width`` is the perpendicular
+    cell dimension.
 
     Only net seaward flow (positive, i.e. land head > sea head) is summed;
     net landward flow contributes negative values (inflow from the sea).
@@ -1406,7 +1422,7 @@ def sea_flux_from_darcy(head_arr, hk_arr, sea_arr, active_arr, delr, delc,
     mask_e = land[:, :-1] & is_sea[:, 1:]
     if mask_e.any():
         dh = h[:, :-1] - h[:, 1:]          # head difference (land minus sea=0)
-        dist = 0.5 * delc                   # half-cell distance to shared face
+        dist = delc                         # centre-to-centre distance (MODFLOW 6)
         k_l  = hk_arr[:, :-1]
         q_face = k_l * aquifer_thickness_m * dh / dist * delr  # m³/s per cell
         contrib = np.where(mask_e, q_face, 0.0)
@@ -1421,7 +1437,7 @@ def sea_flux_from_darcy(head_arr, hk_arr, sea_arr, active_arr, delr, delc,
     mask_w = land[:, 1:] & is_sea[:, :-1]
     if mask_w.any():
         dh = h[:, 1:] - h[:, :-1]
-        dist = 0.5 * delc
+        dist = delc
         k_l  = hk_arr[:, 1:]
         q_face = k_l * aquifer_thickness_m * dh / dist * delr
         contrib = np.where(mask_w, q_face, 0.0)
@@ -1436,7 +1452,7 @@ def sea_flux_from_darcy(head_arr, hk_arr, sea_arr, active_arr, delr, delc,
     mask_s = land[:-1, :] & is_sea[1:, :]
     if mask_s.any():
         dh = h[:-1, :] - h[1:, :]
-        dist = 0.5 * delr
+        dist = delr
         k_l  = hk_arr[:-1, :]
         q_face = k_l * aquifer_thickness_m * dh / dist * delc
         contrib = np.where(mask_s, q_face, 0.0)
@@ -1451,7 +1467,7 @@ def sea_flux_from_darcy(head_arr, hk_arr, sea_arr, active_arr, delr, delc,
     mask_n = land[1:, :] & is_sea[:-1, :]
     if mask_n.any():
         dh = h[1:, :] - h[:-1, :]
-        dist = 0.5 * delr
+        dist = delr
         k_l  = hk_arr[1:, :]
         q_face = k_l * aquifer_thickness_m * dh / dist * delc
         contrib = np.where(mask_n, q_face, 0.0)

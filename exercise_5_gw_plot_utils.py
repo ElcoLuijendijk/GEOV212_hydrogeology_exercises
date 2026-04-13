@@ -464,7 +464,7 @@ def plot_model_output(head, diagnostics, hk_arr, label, grid, show_obs=None):
         'Blue = above surface (springs); white = at surface; red = deep')
     _cbar(im1, axes[1], 'WT depth (m below surface)')
 
-    # ── Panel C: Darcy flux magnitude + flow arrows ───────────────────────────
+    # ── Panel C: Darcy flux magnitude + streamlines ──────────────────────────
     _valid_q = q_myr_plot[np.isfinite(q_myr_plot)]
     _q_hi = float(np.nanpercentile(_valid_q, 98)) if len(_valid_q) > 0 else 1.0
     _flopy_used_C = False
@@ -474,31 +474,40 @@ def plot_model_output(head, diagnostics, hk_arr, label, grid, show_obs=None):
             _qmag_3d = q_myr_plot[np.newaxis, :, :]
             im2 = pmv.plot_array(_qmag_3d, cmap=cmc.roma, vmin=0, vmax=_q_hi,
                                  masked_values=[1e30])
-            # plot_vector expects m/s fluxes in row/col components;
-            # qx_l is column-direction (east), qy_l is row-direction (south in array)
-            # flopy plot_vector: vx = column (x) component, vy = row (y) component
-            # Note: qy_l points down-row (south) in array space; flopy expects
-            # vx pointing east, vy pointing north — so negate qy_l
-            _qx_3d = np.nan_to_num(qx_l, nan=0.0)[np.newaxis, :, :]
-            _qy_3d = np.nan_to_num(-qy_l, nan=0.0)[np.newaxis, :, :]
-            pmv.plot_vector(_qx_3d, _qy_3d, istep=2, jstep=2,
-                            normalize=False, color='k', scale=None,
-                            alpha=0.7, width=0.003)
             _flopy_used_C = True
         except Exception as _e:
             _warnings.warn(f"flopy PlotMapView failed for panel C, using fallback: {_e}")
             axes[2].cla()
     if not _flopy_used_C:
         im2 = axes[2].imshow(q_myr_plot, cmap=cmc.roma, vmin=0, vmax=_q_hi)
-        u_p = np.nan_to_num(qx_l, nan=0.0)
-        v_p = np.nan_to_num(qy_l, nan=0.0)
-        try:
-            axes[2].streamplot(np.arange(ncol), np.arange(nrow), u_p, v_p,
+
+    # Overlay streamlines — works for both real-coordinate (flopy) and pixel-space paths.
+    # qx_l = East component (+East), qy_l = South component (+South in array space).
+    # streamplot needs u pointing East (+x) and v pointing North (+y), so v = -qy_l.
+    _u_st = np.nan_to_num(qx_l, nan=0.0)
+    _v_st = np.nan_to_num(-qy_l, nan=0.0)
+    try:
+        if _flopy_used_C and mg is not None:
+            # Real map coordinate path: use cell-centre arrays from the modelgrid.
+            _xc = mg.xcellcenters[0, :]    # 1-D easting array (W→E)
+            _yc = mg.ycellcenters[:, 0]    # 1-D northing array (could be N→S)
+            if _yc[0] > _yc[-1]:           # decreasing northing → flip for streamplot
+                _u_flip = _u_st[::-1, :]
+                _v_flip = _v_st[::-1, :]
+                _yc_st  = _yc[::-1]
+            else:
+                _u_flip, _v_flip, _yc_st = _u_st, _v_st, _yc
+            axes[2].streamplot(_xc, _yc_st, _u_flip, _v_flip,
                                color='k', linewidth=0.9, arrowsize=1.3,
-                               arrowstyle='-|>', density=0.7, zorder=5)
-        except Exception:
-            pass
-    axes[2].set_title(f'C) Darcy flux magnitude – {label} (m/yr)')
+                               density=0.7, zorder=5)
+        else:
+            axes[2].streamplot(np.arange(ncol), np.arange(nrow)[::-1],
+                               _u_st[::-1, :], _v_st[::-1, :],
+                               color='k', linewidth=0.9, arrowsize=1.3,
+                               density=0.7, zorder=5)
+    except Exception as _se:
+        _warnings.warn(f"Streamplot failed for panel C: {_se}")
+    axes[2].set_title(f'C) Darcy flux magnitude + flow streamlines – {label} (m/yr)')
     _cbar(im2, axes[2], '|q| (m/yr)')
 
     # ── Panel D: seepage / drainage (all land cells) ──────────────────────────
@@ -859,18 +868,39 @@ def plot_cross_sections(transects, head, dem, sw, drn_flux, active,
     if grid is not None:
         mg = _get_modelgrid(grid, diagnostics)
 
-    # Figure: 1 overview map + per section: seepage panel (1/3 height) + main section
-    fig, axes = plt.subplots(
-        1 + 2 * n, 1,
-        figsize=(9, 3.2 + 5.1 * n),
-        gridspec_kw={'height_ratios': [3.2] + [1.3, 3.8] * n},
-        squeeze=False,
+    # Figure layout:
+    #   Row 0          : overview map (fixed height 3.2 in)
+    #   Rows 1..n      : one entry per cross-section, each split internally into
+    #                    a seepage panel (1.3 in) and a main panel (3.8 in)
+    #                    with NO inter-panel gap (hspace=0) so they look attached.
+    #   Between section groups a moderate gap is added via the outer GridSpec.
+    from matplotlib.gridspec import GridSpec as _GS
+
+    _sec_total_h = 1.3 + 3.8   # inches per section group
+    fig = plt.figure(figsize=(9, 3.2 + _sec_total_h * n))
+    outer_gs = _GS(
+        1 + n, 1,
+        height_ratios=[3.2] + [_sec_total_h] * n,
+        hspace=0.50,
+        left=0.10, right=0.93, top=0.94, bottom=0.04,
     )
-    fig.subplots_adjust(left=0.10, right=0.93, top=0.94, bottom=0.04, hspace=0.60)
-    axes = axes.ravel()
+
+    # Overview axes
+    ov = fig.add_subplot(outer_gs[0, 0])
+
+    # Per-section axes: seepage bar chart tightly above the main cross-section.
+    _ax_seep_list = []
+    _ax_main_list = []
+    for _i in range(n):
+        inner_gs = outer_gs[1 + _i, 0].subgridspec(
+            2, 1,
+            height_ratios=[1.3, 3.8],
+            hspace=0.0,     # zero gap → seepage panel appears flush above xsection
+        )
+        _ax_seep_list.append(fig.add_subplot(inner_gs[0]))
+        _ax_main_list.append(fig.add_subplot(inner_gs[1]))
 
     # ── Overview map: water-table elevation + section locations ──────────────
-    ov = axes[0]
     head_map = np.where(active, head, np.nan)
     vlo = np.nanpercentile(head_map, 2)
     vhi = np.nanpercentile(head_map, 98)
@@ -950,8 +980,8 @@ def plot_cross_sections(transects, head, dem, sw, drn_flux, active,
 
     # ── Cross-section panels ──────────────────────────────────────────────────
     for i_sec, (tr, clr) in enumerate(zip(transects, _sec_colours)):
-        ax_seep = axes[1 + 2 * i_sec]
-        ax      = axes[2 + 2 * i_sec]
+        ax_seep = _ax_seep_list[i_sec]
+        ax      = _ax_main_list[i_sec]
 
         rows_t  = tr['rows']
         cols_t  = tr['cols']
@@ -976,6 +1006,8 @@ def plot_cross_sections(transects, head, dem, sw, drn_flux, active,
         ax_seep.set_ylim(0, seep_max * 1.25)
         ax_seep.set_ylabel('Seepage\n(mm/yr)', fontsize=7)
         ax_seep.tick_params(labelsize=7)
+        ax_seep.tick_params(axis='x', bottom=False)   # no x-ticks: flush join below
+        ax_seep.spines['bottom'].set_visible(False)    # remove border between panels
         ax_seep.set_title(
             f'{tr["label"]}  —  seepage flux  |  {label}',
             fontsize=8, color=clr)
