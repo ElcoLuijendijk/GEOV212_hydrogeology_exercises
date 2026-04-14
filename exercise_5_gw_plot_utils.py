@@ -808,9 +808,7 @@ def plot_cross_sections(transects, head, dem, sw, drn_flux, active,
     Plot an overview map with cross-section locations, followed by one panel
     per cross-section perpendicular to the water-table contours.
 
-    Primary render path: **flopy PlotCrossSection** for the hydrogeological
-    cross-section panels.
-    Fallback: original ``fill_between`` + line plots.
+    Cross-section panels use fill_between + line plots.
 
     Overview panel (top)
     --------------------
@@ -1015,117 +1013,34 @@ def plot_cross_sections(transects, head, dem, sw, drn_flux, active,
             fontsize=8, color=clr)
         ax_seep.set_xticklabels([])
 
-        # ── Main cross-section: try flopy PlotCrossSection ───────────────────
-        _xsec_flopy = False
-        if mg is not None:
-            try:
-                # Build (x, y) coordinate pairs in real map space for the
-                # arbitrary-line cross-section.
-                _line_x = mg.xcellcenters[rows_t, cols_t]
-                _line_y = mg.ycellcenters[rows_t, cols_t]
-                _line_coords = np.column_stack([_line_x, _line_y])
+        # ── Main cross-section ──────────────────────────────────────────
+        ax.fill_between(dist_km, ymin, np.maximum(aq_base, ymin),
+                        color='#a07040', alpha=0.35, label='Below aquifer base',
+                        zorder=1)
+        ax.fill_between(dist_km,
+                        np.maximum(aq_base, ymin),
+                        np.minimum(wt, elev),
+                        color='#4a90d9', alpha=0.45, label='Saturated zone (aquifer)',
+                        zorder=2)
+        ax.fill_between(dist_km, np.minimum(wt, elev), elev,
+                        color='#78c670', alpha=0.45, label='Unsaturated zone',
+                        zorder=3)
+        ax.plot(dist_km, elev,    'k-',  linewidth=1.5, label='Land surface',   zorder=5)
+        ax.plot(dist_km, wt,      'b-',  linewidth=1.5, label='Water table',    zorder=6)
+        ax.plot(dist_km, aq_base, '--',  color='#666', linewidth=0.9,
+                label=f'Aquifer base (DEM − {aquifer_thickness_m:.0f} m)',       zorder=4)
 
-                pxs = PlotCrossSection(
-                    modelgrid=mg,
-                    ax=ax,
-                    line={'line': _line_coords},
-                )
+        sw_mask = (sw_t > 0) & (sw_t < 3)
+        if sw_mask.any():
+            ax.scatter(dist_km[sw_mask], wt[sw_mask] + 2.0,
+                       marker='v', color='#1565C0', s=45, zorder=7,
+                       label='Surface water (river/lake)')
 
-                # 3-D arrays required by PlotCrossSection
-                _head_3d = head[np.newaxis, :, :]
-                _wt_arr  = np.where(active, head, np.nan)[np.newaxis, :, :]
-
-                # Saturated zone fill (head-conforming)
-                pxs.plot_fill_between(
-                    np.where(active, dem - aquifer_thickness_m, np.nan)[np.newaxis, :, :],
-                    colors=['#4a90d9', '#78c670'],
-                    head=_head_3d,
-                    masked_values=[1e30],
-                    alpha=0.45,
-                )
-
-                # Land surface and water-table lines
-                pxs.plot_surface(dem[np.newaxis, :, :], color='k',
-                                 linewidth=1.5, label='Land surface', zorder=5)
-                pxs.plot_surface(_wt_arr, color='b',
-                                 linewidth=1.5, label='Water table', zorder=6)
-                pxs.plot_surface(
-                    (dem - aquifer_thickness_m)[np.newaxis, :, :],
-                    color='#666', linewidth=0.9, linestyle='--',
-                    label=f'Aquifer base (DEM − {aquifer_thickness_m:.0f} m)', zorder=4)
-
-                # Grid lines
-                pxs.plot_grid(linewidth=0.3, color='grey', alpha=0.3)
-
-                # x-axis is distance along section from PlotCrossSection
-                ax.set_ylim(ymin, ymax)
-                ax.set_xlabel('Distance along section (km)')
-                ax.set_ylabel('Elevation (m a.s.l.)')
-                ax.set_title(f'{tr["label"]} — {label}', color=clr)
-
-                # Seepage panel x-axis alignment: PlotCrossSection uses metres
-                # internally; convert seep bar chart to same distance scale.
-                _pxs_dist = pxs.xcenters  # distance in metres along section
-                if len(_pxs_dist) > 0 and np.any(np.isfinite(_pxs_dist)):
-                    _dist_max_km = float(np.nanmax(_pxs_dist)) / 1000.0
-                    ax_seep.set_xlim(0, _dist_max_km)
-                    ax.set_xlim(0, _dist_max_km)
-                    # Re-plot seepage bars at correct scale
-                    ax_seep.cla()
-                    _pxs_dist_km = _pxs_dist / 1000.0
-                    _bar_w2 = (_pxs_dist_km[-1] - _pxs_dist_km[0]) / max(len(_pxs_dist_km), 1) * 0.8
-                    # Map seep_myr to pxs cell order (may differ from tr order)
-                    ax_seep.bar(_pxs_dist_km, seep_myr[:len(_pxs_dist_km)],
-                                width=_bar_w2, color='steelblue', alpha=0.7, edgecolor='none')
-                    ax_seep.set_ylim(0, seep_max * 1.25)
-                    ax_seep.set_ylabel('Seepage\n(mm/yr)', fontsize=7)
-                    ax_seep.tick_params(labelsize=7)
-                    ax_seep.set_title(
-                        f'{tr["label"]}  —  seepage flux  |  {label}',
-                        fontsize=8, color=clr)
-                    ax_seep.set_xticklabels([])
-                    ax_seep.set_xlim(0, _dist_max_km)
-
-                # Reformat x-axis ticks as km (PlotCrossSection uses metres)
-                _xticks_m = ax.get_xticks()
-                ax.set_xticklabels([f'{v / 1000:.1f}' for v in _xticks_m], fontsize=7)
-
-                _xsec_flopy = True
-            except Exception as _e:
-                _warnings.warn(
-                    f"flopy PlotCrossSection failed for section {tr['label']}, "
-                    f"using fallback: {_e}")
-                ax.cla()
-
-        if not _xsec_flopy:
-            # ── Fallback: original fill_between / line plot ───────────────────
-            ax.fill_between(dist_km, ymin, np.maximum(aq_base, ymin),
-                            color='#a07040', alpha=0.35, label='Below aquifer base',
-                            zorder=1)
-            ax.fill_between(dist_km,
-                            np.maximum(aq_base, ymin),
-                            np.minimum(wt, elev),
-                            color='#4a90d9', alpha=0.45, label='Saturated zone (aquifer)',
-                            zorder=2)
-            ax.fill_between(dist_km, np.minimum(wt, elev), elev,
-                            color='#78c670', alpha=0.45, label='Unsaturated zone',
-                            zorder=3)
-            ax.plot(dist_km, elev,    'k-',  linewidth=1.5, label='Land surface',   zorder=5)
-            ax.plot(dist_km, wt,      'b-',  linewidth=1.5, label='Water table',    zorder=6)
-            ax.plot(dist_km, aq_base, '--',  color='#666', linewidth=0.9,
-                    label=f'Aquifer base (DEM − {aquifer_thickness_m:.0f} m)',       zorder=4)
-
-            sw_mask = (sw_t > 0) & (sw_t < 3)
-            if sw_mask.any():
-                ax.scatter(dist_km[sw_mask], wt[sw_mask] + 2.0,
-                           marker='v', color='#1565C0', s=45, zorder=7,
-                           label='Surface water (river/lake)')
-
-            ax.set_xlim(dist_km[0], dist_km[-1])
-            ax.set_ylim(ymin, ymax)
-            ax.set_xlabel('Distance along section (km)')
-            ax.set_ylabel('Elevation (m a.s.l.)')
-            ax.set_title(f'{tr["label"]} — {label}', color=clr)
+        ax.set_xlim(dist_km[0], dist_km[-1])
+        ax.set_ylim(ymin, ymax)
+        ax.set_xlabel('Distance along section (km)')
+        ax.set_ylabel('Elevation (m a.s.l.)')
+        ax.set_title(f'{tr["label"]} — {label}', color=clr)
 
         # Endpoint labels (A/B, C/D, …) at left and right margins
         lbl_start, lbl_end = _endpoint_labels[i_sec % len(_endpoint_labels)]
