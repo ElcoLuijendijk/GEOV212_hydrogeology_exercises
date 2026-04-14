@@ -994,8 +994,10 @@ def plot_cross_sections(transects, head, dem, sw, drn_flux, active,
         aq_base  = elev - aquifer_thickness_m
         seep_myr = np.maximum(flux / cell_area, 0.0) * 1000.0 * _S_PER_YR
 
-        ymin = float(np.nanmin(aq_base)) - 5.0
-        ymax = float(np.nanmax(elev)) + 8.0
+        _aq_base_min = np.nanmin(aq_base)
+        _elev_max    = np.nanmax(elev)
+        ymin = (float(_aq_base_min) if np.isfinite(_aq_base_min) else 0.0)   - 5.0
+        ymax = (float(_elev_max)    if np.isfinite(_elev_max)    else 100.0) + 8.0
 
         # ── Seepage panel ────────────────────────────────────────────────────
         bar_w = (dist_km[-1] - dist_km[0]) / max(len(dist_km), 1) * 0.8
@@ -1064,8 +1066,8 @@ def plot_cross_sections(transects, head, dem, sw, drn_flux, active,
                 # Seepage panel x-axis alignment: PlotCrossSection uses metres
                 # internally; convert seep bar chart to same distance scale.
                 _pxs_dist = pxs.xcenters  # distance in metres along section
-                if len(_pxs_dist) > 0:
-                    _dist_max_km = _pxs_dist.max() / 1000.0
+                if len(_pxs_dist) > 0 and np.any(np.isfinite(_pxs_dist)):
+                    _dist_max_km = float(np.nanmax(_pxs_dist)) / 1000.0
                     ax_seep.set_xlim(0, _dist_max_km)
                     ax.set_xlim(0, _dist_max_km)
                     # Re-plot seepage bars at correct scale
