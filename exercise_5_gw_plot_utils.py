@@ -1014,9 +1014,9 @@ def plot_cross_sections(transects, head, dem, sw, drn_flux, active,
         ax_seep.set_xticklabels([])
 
         # ── Main cross-section ──────────────────────────────────────────
-        ax.fill_between(dist_km, ymin, np.maximum(aq_base, ymin),
-                        color='#a07040', alpha=0.35, label='Below aquifer base',
-                        zorder=1)
+        #ax.fill_between(dist_km, ymin, np.maximum(aq_base, ymin),
+        #                color='#a07040', alpha=0.35, label='Below aquifer base',
+        #                zorder=1)
         ax.fill_between(dist_km,
                         np.maximum(aq_base, ymin),
                         np.minimum(wt, elev),
@@ -1027,8 +1027,8 @@ def plot_cross_sections(transects, head, dem, sw, drn_flux, active,
                         zorder=3)
         ax.plot(dist_km, elev,    'k-',  linewidth=1.5, label='Land surface',   zorder=5)
         ax.plot(dist_km, wt,      'b-',  linewidth=1.5, label='Water table',    zorder=6)
-        ax.plot(dist_km, aq_base, '--',  color='#666', linewidth=0.9,
-                label=f'Aquifer base (DEM − {aquifer_thickness_m:.0f} m)',       zorder=4)
+        #ax.plot(dist_km, aq_base, '--',  color='#666', linewidth=0.9,
+        #        label=f'Aquifer base (DEM − {aquifer_thickness_m:.0f} m)',       zorder=4)
 
         sw_mask = (sw_t > 0) & (sw_t < 3)
         if sw_mask.any():
