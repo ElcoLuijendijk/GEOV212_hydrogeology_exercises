@@ -801,16 +801,24 @@ def seepage_surfacewater_targets(head_arr, diagnostics, sw_arr, active_arr):
     """
     Evaluate how well the model reproduces surface-water / seepage locations.
 
-    Three metrics are computed:
+    Metrics computed:
     - seepage_match_fraction  : fraction of mapped SW cells where the drain is
       active (head > drain elevation), i.e. groundwater discharges here.
+      Diagnostic only; not part of the calibration target.
     - surfacewater_stage_rmse_m : RMSE of (head − drain_elev) at SW cells.
+      Diagnostic only; not part of the calibration target.
     - seepage_surfacewater_jaccard  : Jaccard overlap of modelled seepage area
-      and mapped SW area.
+      and mapped SW area.  Diagnostic only.
     - below_wt_fraction : fraction of mapped SW cells where head < drain
       elevation (water table is BELOW the river/lake bed – losing reaches).
-      A high value indicates the model over-drains the stream network and
-      should receive a calibration penalty.
+      Diagnostic only; not part of the calibration target.
+    - sw_head_deficit_rmse_m : RMSE of the head deficit below the surface-water
+      level at each SW cell.  The per-cell deficit is
+      ``max(0, drn_elev - head)``: gaining cells (head >= drn_elev) contribute
+      zero; only losing cells are penalised.  The RMSE is computed over *all*
+      SW cells so the denominator is always n_sw (not just the losing subset).
+      **This metric is one of the two primary calibration targets**, alongside
+      the well watertable-depth RMSE.
 
     Returns
     -------
@@ -828,6 +836,7 @@ def seepage_surfacewater_targets(head_arr, diagnostics, sw_arr, active_arr):
     seepage_match = np.nan
     stage_rmse = np.nan
     below_wt_fraction = np.nan
+    sw_head_deficit_rmse = np.nan
     n_below_wt = 0
     if n_sw > 0:
         seepage_match = float((drn_active & sw_cells).sum() / n_sw)
@@ -836,6 +845,14 @@ def seepage_surfacewater_targets(head_arr, diagnostics, sw_arr, active_arr):
         below_wt_arr = sw_cells & np.isfinite(head_arr) & (head_arr < drn_elev)
         n_below_wt = int(below_wt_arr.sum())
         below_wt_fraction = n_below_wt / n_sw
+
+        # Head-deficit RMSE: deficit = max(0, drn_elev - head).
+        # Gaining cells (head >= drn_elev) contribute zero deficit; only losing
+        # cells are penalised.  Denominator is always n_sw (all SW cells).
+        h_sw = head_arr[sw_cells]
+        e_sw = drn_elev[sw_cells]
+        deficit = np.maximum(0.0, e_sw - h_sw)
+        sw_head_deficit_rmse = float(np.sqrt(np.nanmean(deficit ** 2)))
 
     seepage_cells = (drn_flux > 0.0) & active_arr
     jaccard = np.nan
@@ -851,6 +868,7 @@ def seepage_surfacewater_targets(head_arr, diagnostics, sw_arr, active_arr):
         "seepage_surfacewater_jaccard": jaccard,
         "n_sw_below_wt": n_below_wt,
         "below_wt_fraction": below_wt_fraction,
+        "sw_head_deficit_rmse_m": sw_head_deficit_rmse,
     }
 
 
@@ -1058,68 +1076,51 @@ def combined_calibration_loss(
     obs_stats,
     target_stats,
     w_rmse=1.0,
-    w_r2=0.75,
-    w_seepage=0.5,
-    w_sw_stage=0.3,
-    w_below_wt=0.5,
+    w_sw_deficit=1.0,
 ):
     """
-    Compute a scalar calibration loss that combines multiple goodness-of-fit
-    criteria into a single value to minimise.
+    Compute a scalar calibration loss combining two primary targets.
 
-    Terms are scaled to comparable magnitudes (but not all constrained to
-    [0, 1]) so that weights can be interpreted consistently. A higher loss
-    means a worse calibration.
+    The loss is the weighted sum of:
 
-    Scaling used:
-    - rmse_term     = rmse / 10
-    - r2_term       = 1 - clamp(r2, -1, 1)
-    - seep_term     = 1 - seepage_match_fraction
-    - sw_stage_term = min(surfacewater_stage_rmse_m / 3, 5)
-    - below_wt_term = below_wt_fraction
+    1. **Well watertable-depth RMSE** (``obs_stats['rmse']``):
+       Root-mean-square error between observed and modelled water-table depth
+       at borehole locations.  Since depth = DEM − head, and the DEM is fixed,
+       this equals the RMSE of the hydraulic head at observation points.
+       Scaled by 1/10 so typical values (~1–10 m) map to the range 0.1–1.
+
+    2. **Surface-water head-deficit RMSE** (``target_stats['sw_head_deficit_rmse_m']``):
+       RMSE of ``max(0, drn_elev − head)`` at all mapped surface-water cells.
+       Gaining reaches (head ≥ drn_elev) contribute zero deficit; only cells
+       where the water table falls *below* the streambed/lake-bed are penalised.
+       Also scaled by 1/10 to match the RMSE term magnitude.
+
+    All other metrics (R², seepage-match fraction, below-WT fraction) are
+    computed and printed for diagnostic purposes but do **not** enter the loss.
 
     Parameters
     ----------
     obs_stats : dict
-        Output of evaluate_vs_obs (keys: 'rmse', 'r2').
+        Output of evaluate_vs_obs (key used: 'rmse').
     target_stats : dict
-        Output of seepage_surfacewater_targets (keys: 'seepage_match_fraction',
-        'surfacewater_stage_rmse_m', 'below_wt_fraction').
+        Output of seepage_surfacewater_targets
+        (key used: 'sw_head_deficit_rmse_m').
     w_rmse : float
-        Weight for the RMSE term (head observations). Default 1.0.
-    w_r2 : float
-        Weight for the R² term. Default 0.75.
-    w_seepage : float
-        Weight for the seepage-match term. Default 0.5.
-    w_sw_stage : float
-        Weight for the surface-water stage RMSE term. Default 0.3.
-    w_below_wt : float
-        Weight for the fraction of SW cells where water table is below
-        river/lake bed (losing-reach penalty). Default 0.5.
+        Weight for the well depth-RMSE term.  Default 1.0.
+    w_sw_deficit : float
+        Weight for the SW head-deficit RMSE term.  Default 1.0.
 
     Returns
     -------
-    float  – combined loss value.
+    float  – combined loss value (lower is better).
     """
-    rmse     = obs_stats.get("rmse", np.nan)
-    r2       = obs_stats.get("r2", np.nan)
-    seep     = target_stats.get("seepage_match_fraction", np.nan)
-    sw_stage = target_stats.get("surfacewater_stage_rmse_m", np.nan)
-    below_wt = target_stats.get("below_wt_fraction", np.nan)
+    rmse       = obs_stats.get("rmse", np.nan)
+    sw_deficit = target_stats.get("sw_head_deficit_rmse_m", np.nan)
 
-    rmse_term     = 1e6 if not np.isfinite(rmse)     else rmse / 10.0
-    r2_term       = 2.0 if not np.isfinite(r2)       else (1.0 - max(min(r2, 1.0), -1.0))
-    seep_term     = 1.0 if not np.isfinite(seep)     else (1.0 - seep)
-    sw_stage_term = 1.0 if not np.isfinite(sw_stage) else min(sw_stage / 3.0, 5.0)
-    below_wt_term = 1.0 if not np.isfinite(below_wt) else below_wt
+    rmse_term       = 1e6 if not np.isfinite(rmse)       else rmse / 10.0
+    sw_deficit_term = 1e6 if not np.isfinite(sw_deficit) else sw_deficit / 10.0
 
-    return (
-        w_rmse     * rmse_term
-        + w_r2     * r2_term
-        + w_seepage * seep_term
-        + w_sw_stage * sw_stage_term
-        + w_below_wt * below_wt_term
-    )
+    return w_rmse * rmse_term + w_sw_deficit * sw_deficit_term
 
 
 def compute_darcy_flux(head_arr, hk_arr, delr, delc, active_arr):
