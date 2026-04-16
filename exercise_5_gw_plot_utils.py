@@ -1017,11 +1017,11 @@ def plot_cross_sections(transects, head, dem, sw, drn_flux, active,
         #ax.fill_between(dist_km, ymin, np.maximum(aq_base, ymin),
         #                color='#a07040', alpha=0.35, label='Below aquifer base',
         #                zorder=1)
-        ax.fill_between(dist_km,
-                        np.maximum(aq_base, ymin),
-                        np.minimum(wt, elev),
-                        color='#4a90d9', alpha=0.45, label='Saturated zone (aquifer)',
-                        zorder=2)
+        #ax.fill_between(dist_km,
+        #                np.maximum(aq_base, ymin),
+        #                np.minimum(wt, elev),
+        #                color='#4a90d9', alpha=0.45, label='Saturated zone (aquifer)',
+        #                zorder=2)
         ax.fill_between(dist_km, np.minimum(wt, elev), elev,
                         color='#78c670', alpha=0.45, label='Unsaturated zone',
                         zorder=3)
