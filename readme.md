@@ -13,9 +13,9 @@ Please follow one of the following links to open the exercises in [Google Colab]
   * [Exercise 3b: Resilience of a qanat to drought](http://colab.research.google.com/github/ElcoLuijendijk/GEOV212_hydrogeology_exercises/blob/main/exercise_3b_qanat_resilience.ipynb)
 * [Exercise 4: Compaction](http://colab.research.google.com/github/ElcoLuijendijk/GEOV212_hydrogeology_exercises/blob/main/exercise_4_compaction.ipynb)
 * Exercise 5: Map-view groundwater model of a catchment of choice in Norway
-  * Overview and workflow
   * [5a: Collect model data from open data sources](http://colab.research.google.com/github/ElcoLuijendijk/GEOV212_hydrogeology_exercises/blob/main/exercise_5a_model_data.ipynb)
   * [5b: Run and calibrate a steady-state groundwater model](http://colab.research.google.com/github/ElcoLuijendijk/GEOV212_hydrogeology_exercises/blob/main/exercise_5b_gw_model.ipynb)
+  * [5c: Groundwater flooding, geohazards and climate change](http://colab.research.google.com/github/ElcoLuijendijk/GEOV212_hydrogeology_exercises/blob/main/exercise_5c_climate_hazard.ipynb)
 
 
 
